@@ -11,6 +11,11 @@ ARCH_PATH      = ./archive
 OSAX_SRC       = ./src/osax/payload_bin.c ./src/osax/loader_bin.c
 YABAI_SRC      = ./src/manifest.m $(OSAX_SRC)
 OSAX_PATH      = ./src/osax
+# Match the arm64e PAC ABI of the Dock process receiving the scripting addition.
+# Newer SDKs otherwise emit ABI 1, which Sequoia's ABI 0 Dock cannot load.
+# Override explicitly with: make install OSAX_ARM64E_ABI=0 (or 1).
+OSAX_ARM64E_ABI ?= $(shell xcrun otool -arch arm64e -h /System/Library/CoreServices/Dock.app/Contents/MacOS/Dock 2>/dev/null | awk '$$4 == "0x80" {print 0; exit} $$4 == "0x81" {print 1; exit}')
+OSAX_ABI_FLAGS = $(if $(OSAX_ARM64E_ABI),-Xarch_arm64e -fptrauth-abi-version=$(OSAX_ARM64E_ABI))
 INFO_PLIST     = $(ASSET_PATH)/Info.plist
 BINS           = $(BUILD_PATH)/yabai
 
@@ -27,9 +32,9 @@ tsan: clean-build $(BINS)
 install: BUILD_FLAGS=-std=c11 -Wall -Wextra -DNDEBUG -O3 -fvisibility=hidden -mmacosx-version-min=11.0 -fno-objc-arc -arch x86_64 -arch arm64 -sectcreate __TEXT __info_plist $(INFO_PLIST)
 install: clean-build $(BINS)
 
-$(OSAX_SRC): $(OSAX_PATH)/loader.m $(OSAX_PATH)/payload.m
-	xcrun clang $(OSAX_PATH)/payload.m -shared -fPIC -O3 -mmacosx-version-min=11.0 -arch x86_64 -arch arm64e -o $(OSAX_PATH)/payload $(FRAMEWORK_PATH) -framework SkyLight -framework Foundation -framework Carbon
-	xcrun clang $(OSAX_PATH)/loader.m -O3 -mmacosx-version-min=11.0 -arch x86_64 -arch arm64e -o $(OSAX_PATH)/loader -framework Cocoa
+$(OSAX_SRC): $(OSAX_PATH)/loader.m $(OSAX_PATH)/payload.m makefile
+	xcrun clang $(OSAX_PATH)/payload.m -shared -fPIC -O3 -mmacosx-version-min=11.0 -arch x86_64 -arch arm64e $(OSAX_ABI_FLAGS) -o $(OSAX_PATH)/payload $(FRAMEWORK_PATH) -framework SkyLight -framework Foundation -framework Carbon
+	xcrun clang $(OSAX_PATH)/loader.m -O3 -mmacosx-version-min=11.0 -arch x86_64 -arch arm64e $(OSAX_ABI_FLAGS) -o $(OSAX_PATH)/loader -framework Cocoa
 	xxd -i -a $(OSAX_PATH)/payload $(OSAX_PATH)/payload_bin.c
 	xxd -i -a $(OSAX_PATH)/loader $(OSAX_PATH)/loader_bin.c
 	rm -f $(OSAX_PATH)/payload
