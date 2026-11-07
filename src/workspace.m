@@ -179,6 +179,11 @@ extern struct event_loop g_event_loop;
                 name:NSWorkspaceDidWakeNotification
                 object:nil];
 
+       [[[NSWorkspace sharedWorkspace] notificationCenter] addObserver:self
+                selector:@selector(didWakeScreens:)
+                name:NSWorkspaceScreensDidWakeNotification
+                object:nil];
+
        [[NSDistributedNotificationCenter defaultCenter] addObserver:self
                 selector:@selector(didChangeMenuBarHiding:)
                 name:@"AppleInterfaceMenuBarHidingChangedNotification"
@@ -261,6 +266,21 @@ extern struct event_loop g_event_loop;
 - (void)didWake:(NSNotification *)notification
 {
     event_loop_post(&g_event_loop, SYSTEM_WOKE, NULL, 0);
+}
+
+- (void)didWakeScreens:(NSNotification *)notification
+{
+    //
+    // NOTE: The display may not be active yet when this arrives, and a short display sleep
+    // produces no display-added event at all, so retry apps with unresolved windows a few times.
+    //
+
+    double delays[] = { 0.5, 2.0, 5.0 };
+    for (int i = 0; i < 3; ++i) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delays[i] * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            event_loop_post(&g_event_loop, SCREENS_WOKE, NULL, 0);
+        });
+    }
 }
 
 - (void)didChangeMenuBarHiding:(NSNotification *)notification

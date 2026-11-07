@@ -174,6 +174,7 @@ static EVENT_HANDLER(APPLICATION_LAUNCHED)
 
     int window_count;
     struct window **window_list = window_manager_add_application_windows(&g_space_manager, &g_window_manager, application, &window_count);
+    window_manager_queue_unresolved_application(&g_window_manager, application);
     uint32_t prev_window_id = g_window_manager.focused_window_id;
 
     uint64_t sid;
@@ -1080,12 +1081,32 @@ static EVENT_HANDLER(DISPLAY_CHANGED)
     event_signal_push(SIGNAL_DISPLAY_CHANGED, NULL);
 }
 
+//
+// NOTE: Apps that launched while no display was active have windows we could not resolve
+// (see window_manager_queue_unresolved_application). Retry them, and tile what we found on
+// the visible space.
+//
+
+static void refresh_unresolved_application_windows(void)
+{
+    if (!buf_len(g_window_manager.applications_to_refresh)) return;
+    if (display_manager_active_display_count() == 0) return;
+
+    if (space_manager_refresh_application_windows(&g_space_manager)) {
+        uint64_t sid = space_manager_active_space();
+        if (!mission_control_is_active() && space_is_user(sid)) {
+            window_manager_validate_and_check_for_windows_on_space(&g_space_manager, &g_window_manager, sid);
+        }
+    }
+}
+
 static EVENT_HANDLER(DISPLAY_ADDED)
 {
     uint32_t did = (uint32_t)(intptr_t) context;
     debug("%s: %d\n", __FUNCTION__, did);
     space_manager_handle_display_add(&g_space_manager, did);
     window_manager_handle_display_add_and_remove(&g_space_manager, &g_window_manager, did);
+    refresh_unresolved_application_windows();
     event_signal_push(SIGNAL_DISPLAY_ADDED, context);
 }
 
@@ -1609,6 +1630,12 @@ static EVENT_HANDLER(SYSTEM_WOKE)
     }
 
     event_signal_push(SIGNAL_SYSTEM_WOKE, NULL);
+}
+
+static EVENT_HANDLER(SCREENS_WOKE)
+{
+    debug("%s:\n", __FUNCTION__);
+    refresh_unresolved_application_windows();
 }
 
 static EVENT_HANDLER(DAEMON_MESSAGE)

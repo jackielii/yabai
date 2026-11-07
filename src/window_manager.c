@@ -1604,13 +1604,63 @@ static uint32_t *window_manager_existing_application_window_list(struct applicat
     return space_list ? space_window_list_for_connection(space_list, space_count, application ? application->connection : 0, window_count, true) : NULL;
 }
 
+void window_manager_queue_application_refresh(struct window_manager *wm, struct application *application)
+{
+    for (int i = 0; i < buf_len(wm->applications_to_refresh); ++i) {
+        if (wm->applications_to_refresh[i] == application) return;
+    }
+
+    buf_push(wm->applications_to_refresh, application);
+}
+
+void window_manager_queue_unresolved_application(struct window_manager *wm, struct application *application)
+{
+    //
+    // NOTE: When an app launches while no display is active (e.g. the display is asleep and an
+    // auto-updater relaunches the app), the AX API returns none of its windows, and the window-created
+    // notifications were sent before we started observing. Nothing would add those windows again,
+    // so queue the app; the queue is retried on space and display changes, and when the screens wake.
+    //
+
+    if (display_manager_active_display_count() == 0) {
+        debug("%s: no active display while %s launched, queueing it\n", __FUNCTION__, application->name);
+        window_manager_queue_application_refresh(wm, application);
+        return;
+    }
+
+    int global_window_count;
+    uint32_t *global_window_list = window_manager_existing_application_window_list(application, &global_window_count);
+    if (!global_window_list) return;
+
+    for (int i = 0; i < global_window_count; ++i) {
+        if (!window_manager_find_window(wm, global_window_list[i])) {
+            debug("%s: %s has window %d that is not yet resolved, queueing it\n", __FUNCTION__, application->name, global_window_list[i]);
+            window_manager_queue_application_refresh(wm, application);
+            return;
+        }
+    }
+}
+
 bool window_manager_add_existing_application_windows(struct space_manager *sm, struct window_manager *wm, struct application *application, int refresh_index)
 {
     bool result = false;
 
     int global_window_count;
     uint32_t *global_window_list = window_manager_existing_application_window_list(application, &global_window_count);
-    if (!global_window_list) return result;
+    if (!global_window_list) {
+        //
+        // NOTE: An app queued while no display was active (see window_manager_queue_unresolved_application)
+        // may turn out to have no windows at all once displays are back; stop retrying it then.
+        //
+
+        if (refresh_index != -1 && display_manager_active_display_count() > 0) {
+            debug("%s: %s has no windows to resolve\n", __FUNCTION__, application->name);
+            buf_del(wm->applications_to_refresh, refresh_index);
+            result = true;
+        }
+
+        return result;
+    }
 
     CFArrayRef window_list_ref = application_window_list(application);
     int window_count = window_list_ref ? CFArrayGetCount(window_list_ref) : 0;
@@ -1713,7 +1763,7 @@ bool window_manager_add_existing_application_windows(struct space_manager *sm, s
 
             if (ts_buf_len(app_window_list) > 0) {
                 debug("%s: workaround failed to resolve all windows for %s\n", __FUNCTION__, application->name);
-                buf_push(wm->applications_to_refresh, application);
+                window_manager_queue_application_refresh(wm, application);
             } else {
                 debug("%s: workaround resolved all windows for %s\n", __FUNCTION__, application->name);
             }
